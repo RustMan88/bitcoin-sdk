@@ -1,0 +1,14 @@
+[workspace]
+members = [ "chain",
+            "crypto",
+            "keys",
+            "primitives",
+            "script",
+            "serialization",
+            "serialization_derive",
+            "wallet",
+            ]
+
+
+
+

@@ -1,0 +1,16 @@
+[package]
+name = "wallet"
+version = "0.1.0"
+authors = ["rustmann <\"moyuan25@qq.com\">"]
+edition = "2018"
+
+[dependencies]
+chain = {path = "../chain"}
+primitives = {path = "../primitives"}
+keys = {path = "../keys"}
+script = {path = "../script"}
+serialization = { path = "../serialization"}
+bitcrypto = {path = "../crypto"}
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
