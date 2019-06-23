@@ -1,5 +1,5 @@
 use chain::{Transaction, TransactionInput, TransactionOutput, OutPoint, constants::SEQUENCE_LOCKTIME_DISABLE_FLAG};
-use super::{TxInput, TxOutput,Error};
+use super::{TxInput,Error};
 use primitives::{hash::H256, bytes::Bytes};
 use keys::{Address, Public, Private, KeyPair, Type as AddressType};
 use script::{Script, ScriptType, ScriptAddress, ScriptWitness, Builder as ScriptBuilder, Opcode};
@@ -19,14 +19,15 @@ fn signature_hash(tx: &Transaction, input_index: usize, script_pubkey: &Script, 
     let (sighash, anyone_can_pay) = SigHashType::from_u32(sighash_u32).split_anyonecanpay_flag();
     // Special-case sighash_single bug because this is easy enough.
     if sighash == SigHashType::Single && input_index >= tx.outputs.len() {
-        return H256::from(&[1, 0, 0, 0, 0, 0, 0, 0,
+        let v = [1, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0][..]);
+            0, 0, 0, 0, 0, 0, 0, 0];
+        return H256::from(v);
     }
 
     // Build tx to sign
-    let mut tx = Transaction {
+    let mut tx_tmp = Transaction {
         version: tx.version,
         lock_time: tx.lock_time,
         inputs: vec![],
@@ -35,18 +36,18 @@ fn signature_hash(tx: &Transaction, input_index: usize, script_pubkey: &Script, 
 
     // Add all inputs necessary..
     if anyone_can_pay {
-        tx.inputs.push(TransactionInput {
+        tx_tmp.inputs.push(TransactionInput {
             previous_output: tx.inputs[input_index].previous_output.clone(),
             script_sig: script_pubkey.to_bytes(),
             sequence: tx.inputs[input_index].sequence,
             script_witness: vec![],
         })
     } else {
-        tx.inputs = Vec::with_capacity(tx.inputs.len());
+        tx_tmp.inputs = Vec::with_capacity(tx.inputs.len());
 
         for n in 0..tx.inputs.len() {
             let input = &tx.inputs[n];
-            tx.inputs.push(TransactionInput {
+            tx_tmp.inputs.push(TransactionInput {
                 previous_output: input.previous_output.clone(),
                 script_sig: if n == input_index { script_pubkey.to_bytes() } else { Script::from("").to_bytes() },
                 sequence: if n != input_index && (sighash == SigHashType::Single || sighash == SigHashType::None) { 0 } else { input.sequence },
@@ -56,7 +57,7 @@ fn signature_hash(tx: &Transaction, input_index: usize, script_pubkey: &Script, 
     }
 
     // ..then all outputs
-    tx.outputs = match sighash {
+    tx_tmp.outputs = match sighash {
         SigHashType::All => tx.outputs.clone(),
         SigHashType::Single => {
             let output_iter = tx.outputs.iter()
@@ -73,6 +74,93 @@ fn signature_hash(tx: &Transaction, input_index: usize, script_pubkey: &Script, 
     tx_raw.extend([1, 0, 0, 0].iter());
 
     return bitcrypto::dhash256(&tx_raw);
+}
+
+/// Transaction output of form "address": amount
+#[derive(Debug, PartialEq)]
+struct TransactionOutputWithAddress {
+    /// Receiver' address
+    pub address: Address,
+    /// Amount in BTC
+    pub amount: f64,
+}
+
+/// Trasaction output of form "data": serialized(output script data)
+#[derive(Debug, PartialEq)]
+struct TransactionOutputWithScriptData {
+    /// Serialized script data
+    pub script_data: Bytes,
+}
+
+/// Transaction output
+#[derive(Debug, PartialEq)]
+pub enum TxOutput {
+    /// Of form address: amount
+    Address(TransactionOutputWithAddress),
+    /// Of form data: script_data_bytes
+    ScriptData(TransactionOutputWithScriptData),
+}
+
+pub fn create_raw_transaction(inputs: Vec<TxInput>, outputs: Vec<TxOutput>, lock_time: Trailing<u32>) -> Result<Transaction, String> {
+
+    // to make lock_time work at least one input must have sequnce < SEQUENCE_FINAL
+    let lock_time = 0u32;
+    let default_sequence = if lock_time != 0 { chain::constants::SEQUENCE_FINAL - 1 } else { chain::constants::SEQUENCE_FINAL };
+
+    // prepare inputs
+    let inputs: Vec<_> = inputs.into_iter()
+        .map(|input| TransactionInput {
+            previous_output: OutPoint {
+                hash: Into::<H256>::into(input.txid).reversed(),
+                index: input.index,
+            },
+            script_sig: Bytes::new(), // default script
+            sequence: default_sequence,
+            script_witness: vec![],
+        }).collect();
+
+    // prepare outputs
+    let outputs: Vec<_> = outputs.into_iter()
+        .map(|output| match output {
+            TxOutput::Address(with_address) => {
+                let amount_in_satoshis = (with_address.amount * (chain::constants::SATOSHIS_IN_COIN as f64)) as u64;
+                let script = match with_address.address.kind {
+                    keys::Type::P2PKH => ScriptBuilder::build_p2pkh(&with_address.address.hash),
+                    keys::Type::P2SH => ScriptBuilder::build_p2sh(&with_address.address.hash),
+                };
+
+                TransactionOutput {
+                    value: amount_in_satoshis,
+                    script_pubkey: script.to_bytes(),
+                }
+            },
+            TxOutput::ScriptData(with_script_data) => {
+                let script = ScriptBuilder::default()
+                    .return_bytes(&*with_script_data.script_data)
+                    .into_script();
+
+                TransactionOutput {
+                    value: 0,
+                    script_pubkey: script.to_bytes(),
+                }
+            },
+        }).collect();
+
+    Ok(Transaction {
+        version: 1,
+        inputs,
+        outputs,
+        lock_time,
+    })
+}
+
+pub fn sign_raw_transaction(rawTx :& mut Transaction,keypairs : Vec<KeyPair>)->Result<String,Error> {
+     for i in 0..rawTx.inputs.len() {
+         let vin = &rawTx.inputs[i];
+         let kp = keypairs.get(i).map_err(||Err(Error::NotFoundKeyError))?;
+     }
+
+    Err(Error::SignRawTxError)
 }
 
 pub fn sign_tx(vins: Vec<TxInput>, vouts: Vec<TxOutput>, accounts: HashMap<String, Account>) -> Result<Transaction, Error> {
@@ -135,10 +223,11 @@ pub fn sign_tx(vins: Vec<TxInput>, vouts: Vec<TxOutput>, accounts: HashMap<Strin
         let vout = &vouts[i];
         // dest output
 
-        let account = accounts.get(&vout.address).ok_or(Error::CustomError("don't find key".to_string()))?;
+        //let account = accounts.get(&vout.address).ok_or(Error::CustomError("don't find key".to_string()))?;
+        let to_addr = Address::from_str(&vout.address)?;
         let output = TransactionOutput {
             value: vout.value,
-            script_pubkey: ScriptBuilder::build_p2pkh(&account.address.hash).to_bytes(),
+            script_pubkey: ScriptBuilder::build_p2pkh(&to_addr.hash).to_bytes(),
         };
         tx.outputs.push(output);
     }

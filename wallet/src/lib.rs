@@ -20,7 +20,9 @@ use script::{Builder, Script,SignatureVersion, TransactionInputSigner};
 use primitives::bytes::Bytes;
 
 pub enum Error {
-    CustomError(String),
+    GreateRawTxError,
+    NotFoundKeyError,
+    SignRawTxError
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
