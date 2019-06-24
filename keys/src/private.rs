@@ -89,8 +89,8 @@ impl DisplayLayout for Private {
 		}
 
 		let network = match data[0] {
-			128 => Network::BtcMainnet,
-			239 => Network::BtcTestnet,
+			128 => Network::BtgMainnet,
+			239 => Network::BtgTestnet,
 			_ => return Err(Error::InvalidPrivate),
 		};
 

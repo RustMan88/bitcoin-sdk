@@ -61,8 +61,6 @@ impl DisplayLayout for Address {
 			(Network::BtcTestnet, Type::P2SH) => 196,
 			(Network::BtgMainnet, Type::P2PKH) => 38, //prefix: G
 			(Network::BtgMainnet, Type::P2SH) => 23, //prefix: A
-			(Network::BtgTestnet, Type::P2PKH) => 111,
-			(Network::BtgTestnet, Type::P2SH) => 196,
 			_ => 0,
 		};
 
@@ -74,6 +72,7 @@ impl DisplayLayout for Address {
 
 	fn from_layout(data: &[u8]) -> Result<Self, Error> where Self: Sized {
 		if data.len() != 25 {
+			println!("{}",data.len());
 			return Err(Error::InvalidAddress);
 		}
 
@@ -87,6 +86,8 @@ impl DisplayLayout for Address {
 			5 => (Network::BtcMainnet, Type::P2SH),
 			111 => (Network::BtcTestnet, Type::P2PKH),
 			196 => (Network::BtcTestnet, Type::P2SH),
+			38 =>(Network::BtgMainnet, Type::P2PKH) , //prefix: G
+			23 =>(Network::BtgMainnet, Type::P2SH), //prefix: A
 			_ => return Err(Error::InvalidAddress),
 		};
 
@@ -149,5 +150,13 @@ mod tests {
 		};
 
 		assert_eq!(address, "16meyfSoQV6twkAAxPe51RtMVz7PGRmWna".into());
+	}
+
+	#[test]
+	fn test_address_decode(){
+		use std::str::FromStr;
+		let s= "GMSMnWHYpJRkFe1kpx86tJcTNCrV6Wfezv";
+		let a = Address::from_str(s).expect("sdfsf");
+		println!("{}",a)
 	}
 }
