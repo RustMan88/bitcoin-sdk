@@ -7,6 +7,7 @@ use std::{
     collections::HashMap,
 };
 
+
 #[derive(Debug)]
 pub struct Account {
     pub kp: KeyPair,
@@ -51,6 +52,7 @@ pub enum SigHashType {
     /// (This rule is probably an unintentional C++ism, but it's consensus so we have
     /// to follow it.)
     Single = 0x03,
+
     /// 0x81: Sign all outputs but only this input
     AllPlusAnyoneCanPay = 0x81,
     /// 0x82: Sign no outputs and only this input
@@ -91,68 +93,16 @@ impl SigHashType {
     /// Converts to a u32
     pub fn as_u32(&self) -> u32 { *self as u32 }
 }
-
+use byteorder::{LittleEndian, WriteBytesExt};
 fn signature_hash(tx: &Transaction, input_index: usize, script_pubkey: &Script, sighash_u32: u32) -> H256 {
     assert!(input_index < tx.inputs.len());
 
-    let (sighash, anyone_can_pay) = SigHashType::from_u32(sighash_u32).split_anyonecanpay_flag();
-    // Special-case sighash_single bug because this is easy enough.
-    if sighash == SigHashType::Single && input_index >= tx.outputs.len() {
-        let v = [1, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0];
-        return H256::from(v);
-    }
-
-    // Build tx to sign
-    let mut tx_tmp = Transaction {
-        version: tx.version,
-        lock_time: tx.lock_time,
-        inputs: vec![],
-        outputs: vec![],
-    };
-
-    // Add all inputs necessary..
-    if anyone_can_pay {
-        tx_tmp.inputs.push(TransactionInput {
-            previous_output: tx.inputs[input_index].previous_output.clone(),
-            script_sig: script_pubkey.to_bytes(),
-            sequence: tx.inputs[input_index].sequence,
-            script_witness: vec![],
-        })
-    } else {
-        tx_tmp.inputs = Vec::with_capacity(tx.inputs.len());
-
-        for n in 0..tx.inputs.len() {
-            let input = &tx.inputs[n];
-            tx_tmp.inputs.push(TransactionInput {
-                previous_output: input.previous_output.clone(),
-                script_sig: if n == input_index { script_pubkey.to_bytes() } else { Script::from("").to_bytes() },
-                sequence: if n != input_index && (sighash == SigHashType::Single || sighash == SigHashType::None) { 0 } else { input.sequence },
-                script_witness: vec![],
-            });
-        }
-    }
-
-    // ..then all outputs
-    tx_tmp.outputs = match sighash {
-        SigHashType::All => tx.outputs.clone(),
-        SigHashType::Single => {
-            let output_iter = tx.outputs.iter()
-                .take(input_index + 1)  // sign all outputs up to and including this one, but erase
-                .enumerate()            // all of them except for this one
-                .map(|(n, out)| if n == input_index { out.clone() } else { TransactionOutput::default() });
-            output_iter.collect()
-        }
-        SigHashType::None => vec![],
-        _ => unreachable!()
-    };
-
-    let mut tx_raw = serialization::serialize(&tx_tmp).take();
-    tx_raw.extend([1, 0, 0, 0].iter());
-
-    return bitcrypto::dhash256(&tx_raw);
+    let tx_raw = serialization::serialize(tx).take();
+    let mut tx_raw_with_sighash = tx_raw.clone();
+    // SIGHASH_ALL
+    //tx_raw_with_sighash.extend([1, 0, 0, 0].iter());
+    tx_raw_with_sighash.write_u32::<LittleEndian>(sighash_u32).unwrap();
+    return bitcrypto::dhash256(&tx_raw_with_sighash);
 }
 
 pub fn prepare_rawtx(vins: Vec<TxInputReq>, req_vouts: Vec<TxOutputReq>) -> Result<Vec<TxOutput>, Error> {
@@ -190,23 +140,6 @@ pub fn prepare_rawtx(vins: Vec<TxInputReq>, req_vouts: Vec<TxOutputReq>) -> Resu
         return Err(Error::PrepareRawTxError)
     }
 
-/*    let vouts: Vec<_> = req_vouts.iter().map(|out| {
-        let addr  = out.address.parse::<Address>().map_err(|_| Error::AddressParseError)?;
-        let res = match addr.kind {
-            AddressType::P2PKH => {
-                TxOutput::Address(TransactionOutputWithAddress {
-                    address: addr,
-                    amount: out.value,
-                })
-            }
-            AddressType::P2SH => {
-                TxOutput::ScriptData(TransactionOutputWithScriptData {
-                    script_data: Bytes::new()
-                })
-            }
-        };
-        return res;
-    }).collect();*/
 
     Ok(vouts)
 }
@@ -220,28 +153,23 @@ pub fn create_rawtx(vins: Vec<TxInputReq>, vouts: Vec<TxOutput>) -> Result<Trans
     let mut inputs = vec![];
     for i in 0..vins.len(){
         let input = &vins[i];
+
+        let addr_from  = input.address.parse::<Address>().map_err(|_| Error::AddressParseError)?;
+        let script_from = match addr_from.kind {
+            keys::Type::P2PKH => ScriptBuilder::build_p2pkh(&addr_from.hash),
+            keys::Type::P2SH => ScriptBuilder::build_p2sh(&addr_from.hash),
+        };
+
         inputs.push(TransactionInput {
             previous_output: OutPoint {
-                hash: input.txid.parse::<H256>().map_err(|_| Error::TxidParseError)?,
+                hash: input.txid.parse::<H256>().map_err(|_| Error::TxidParseError)?.reversed(),
                 index: input.index,
             },
-            script_sig: Bytes::new(),
+            script_sig: script_from.to_bytes(),
             sequence: default_sequence,
             script_witness: vec![],
         })
     }
-    // prepare inputs
-   /* let inputs: Vec<_> = vins.into_iter().map(|input| {
-        TransactionInput {
-            previous_output: OutPoint {
-                hash: input.txid.parse::<H256>().map_err(|| Error::TxidParseError)?,
-                index: input.index,
-            },
-            script_sig: Bytes::new(),
-            sequence: default_sequence,
-            script_witness: vec![],
-        }
-    }).collect();*/
 
     // prepare outputs
     let outputs: Vec<_> = vouts.into_iter()
@@ -274,14 +202,14 @@ pub fn create_rawtx(vins: Vec<TxInputReq>, vouts: Vec<TxOutput>) -> Result<Trans
     }
 
     Ok(Transaction {
-        version: 0,
+        version: 2,
         inputs,
         outputs,
         lock_time,
     })
 }
 
-pub fn sign_rawtx(tx :&mut Transaction,accounts:Vec<Account>)->Result<Bytes,Error>{
+pub fn sign_rawtx(tx :&mut Transaction,accounts:Vec<Account>)->Result<String,Error>{
    if tx.inputs.len() == 0 || tx.inputs.len() != accounts.len(){
        return Err(Error::GreateRawTxError)
    }
@@ -291,8 +219,9 @@ pub fn sign_rawtx(tx :&mut Transaction,accounts:Vec<Account>)->Result<Bytes,Erro
         match account.address.kind {
             AddressType::P2PKH => {
                 let pk_script = ScriptBuilder::build_p2pkh(&account.address.hash);
+                let sign_type:u32 = 0x1|0x40;
                 let mut serialized_sig = account.kp.private().sign(
-                    &signature_hash(&tx, i, &pk_script, 0x1)).map_err(|_| Error::SignRawTxError)?;
+                    &signature_hash(&tx, i, &pk_script, sign_type)).map_err(|_| Error::SignRawTxError)?;
                 let mut serialized_sig_vec = serialized_sig.to_vec();
                 serialized_sig_vec.push(0x1);
 
@@ -307,78 +236,17 @@ pub fn sign_rawtx(tx :&mut Transaction,accounts:Vec<Account>)->Result<Bytes,Erro
         }
     }
 
-    Ok(serialization::serialize(tx))
+    println!("{:?}",tx);
+
+    Ok(bytes_to_hex(&serialization::serialize(tx).take()))
 }
 
 
-/*
-pub fn sign_tx(vins: Vec<TxInputReq>, vouts: Vec<TxOutputReq>, accounts: HashMap<String, Account>) -> Result<Transaction, Error> {
-    let total_out = vouts.iter().fold(0, |acc, output| acc + output.value);
-    let total_in = vins.iter().fold(0, |acc, input| acc + input.credit);
-
-    if total_in < total_out {
-        return Err(Error::NotEnoughAmount);
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut res = String::with_capacity(bytes.len() * 2);
+    for byte in bytes.iter() {
+        res.push_str(&format!("{:02x}", byte));
     }
-
-    //1. 创建交易模板
-    let mut tx = Transaction {
-        version: 0,
-        lock_time: 0,
-        inputs: Vec::new(),
-        outputs: Vec::new(),
-    };
-
-    //3. 填充 vouts
-    for i in 0..vouts.len() {
-        let vout = &vouts[i];
-        // dest output
-
-        //let account = accounts.get(&vout.address).ok_or(Error::CustomError("don't find key".to_string()))?;
-        let to_addr = Address::from_str(&vout.address)?;
-        let output = TransactionOutput {
-            value: vout.value,
-            script_pubkey: ScriptBuilder::build_p2pkh(&to_addr.hash).to_bytes(),
-        };
-        tx.outputs.push(output);
-    }
-    //2.填充 vins
-
-    for i in 0..vins.len() {
-        let vin = &vins[i];
-
-        let txid = vin.txid.clone();
-        let mut input = TransactionInput {
-            previous_output: OutPoint { hash: txid.parse::<H256>().map_err(|| Err(Error::TxidParseError))?, index: vin.index },
-            script_sig: Bytes::new(),
-            sequence: constants::SEQUENCE_FINAL,
-            script_witness: Vec::new(),
-        };
-
-        let account = accounts.get(&vin.address).ok_or(Error::CustomError("don't find key".to_string()))?;
-        match account.address.kind {
-            AddressType::P2PKH => {
-                let pk_script = ScriptBuilder::build_p2pkh(&account.address.hash);
-                let mut serialized_sig = account.kp.private().sign(
-                    &signature_hash(&tx, i, &pk_script, 0x1)).map_err(|_| Error::CustomError("address error".to_string()))?;
-                let mut serialized_sig_vec = serialized_sig.to_vec();
-                serialized_sig_vec.push(0x1);
-
-                let script = ScriptBuilder::default()
-                    .push_bytes(&serialized_sig_vec)
-                    .push_bytes(&account.kp.public())
-                    .into_script();
-
-                input.script_sig = script.to_bytes();
-            }
-            _ => return Err(Error::NotSupportedAddressFormError),
-        }
-
-        tx.inputs.push(input);
-    }
-
-
-
-    Ok(tx)
+    res
 }
-*/
 

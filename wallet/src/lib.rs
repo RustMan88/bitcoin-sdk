@@ -9,7 +9,7 @@ extern crate bitcrypto;
 extern crate serde_derive;
 extern crate serde;
 extern crate serde_json;
-
+extern crate byteorder;
 pub mod btg;
 
 pub use keys::{Address, Public, Private, KeyPair, Type as AddressType};
@@ -32,6 +32,7 @@ pub enum Error {
     PrepareRawTxError,
     NotFoundAesKeyError,
     AesDecryptError,
+    SerdeJsonError,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

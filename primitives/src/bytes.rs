@@ -3,6 +3,8 @@
 use std::{ops, str, fmt, io, marker};
 use hex::{ToHex, FromHex, FromHexError};
 use heapsize::HeapSizeOf;
+use serde::{Serialize, Serializer, Deserialize, Deserializer};
+use serde::de::{Visitor, Error};
 
 /// Wrapper around `Vec<u8>`
 #[derive(Default, PartialEq, Clone, Eq, Hash)]
@@ -111,6 +113,47 @@ impl AsRef<[u8]> for Bytes {
 impl AsMut<[u8]> for Bytes {
 	fn as_mut(&mut self) -> &mut [u8] {
 		&mut self.0
+	}
+}
+
+impl Serialize for Bytes {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+		where S: Serializer {
+		let mut serialized = String::new();
+		serialized.push_str(self.0.to_hex::<String>().as_ref());
+		serializer.serialize_str(serialized.as_ref())
+	}
+}
+
+impl<'a> Deserialize<'a> for Bytes {
+	fn deserialize<D>(deserializer: D) -> Result<Bytes, D::Error>
+		where D: Deserializer<'a> {
+		deserializer.deserialize_identifier(BytesVisitor)
+	}
+}
+
+struct BytesVisitor;
+
+impl<'a> Visitor<'a> for BytesVisitor {
+	type Value = Bytes;
+
+	fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+		formatter.write_str("a bytes")
+	}
+
+	fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> where E: Error {
+		if value.len() > 0 && value.len() & 1 == 0 {
+			match FromHex::from_hex::<Vec<_>>(&value){
+				Ok(b) => Ok(Bytes::from(b)),
+				Err(_) => Err(Error::custom("invalid hex")),
+			}
+		} else {
+			Err(Error::custom("invalid format"))
+		}
+	}
+
+	fn visit_string<E>(self, value: String) -> Result<Self::Value, E> where E: Error {
+		self.visit_str(value.as_ref())
 	}
 }
 
